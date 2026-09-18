@@ -5,7 +5,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
+    SoundConfig, TabBarStatusEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
     DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
@@ -948,8 +948,12 @@ pub struct UiConfig {
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
     pub tab_bar_position: TabBarPositionConfig,
+    /// Ordered entries shown at the left edge of the desktop tab row, before the tabs. Empty by default.
+    pub tab_bar_left: Vec<TabBarStatusEntryConfig>,
+    /// Text inserted between visible left-side tab bar entries. Default: one space.
+    pub tab_bar_left_separator: String,
     /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
-    pub tab_bar_right: Vec<TabBarRightEntryConfig>,
+    pub tab_bar_right: Vec<TabBarStatusEntryConfig>,
     /// Text inserted between visible right-side tab bar entries. Default: one space.
     pub tab_bar_right_separator: String,
     /// Format for the outer terminal window title. Empty leaves the title alone.
@@ -1180,6 +1184,8 @@ impl Default for UiConfig {
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
+            tab_bar_left: Vec::new(),
+            tab_bar_left_separator: " ".into(),
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),
@@ -1485,10 +1491,12 @@ status_indicators = "symbols"
             default_config.ui.tab_bar_position,
             TabBarPositionConfig::Top
         );
+        assert!(default_config.ui.tab_bar_left.is_empty());
+        assert_eq!(default_config.ui.tab_bar_left_separator, " ");
         assert!(default_config.ui.tab_bar_right.is_empty());
         assert_eq!(default_config.ui.tab_bar_right_separator, " ");
 
-        let toml = r#"
+        let toml = r##"
 [ui]
 pane_borders = "always"
 pane_outer_borders = false
@@ -1505,7 +1513,11 @@ tab_bar_right = [
   { type = "command", command = "status.sh", interval_seconds = 10, timeout_seconds = 3 },
 ]
 tab_bar_right_separator = " · "
-"#;
+tab_bar_left = [
+  { type = "text", text = "iris", fg = "#cba6f7", bold = true },
+]
+tab_bar_left_separator = " | "
+"##;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.pane_borders, PaneBordersConfig::Always);
         assert!(!config.ui.pane_outer_borders);
@@ -1517,9 +1529,19 @@ tab_bar_right_separator = " · "
         assert_eq!(config.ui.tab_bar_right.len(), 5);
         assert!(matches!(
             config.ui.tab_bar_right[1],
-            TabBarRightEntryConfig::Hostname
+            TabBarStatusEntryConfig::Hostname
         ));
         assert_eq!(config.ui.tab_bar_right_separator, " · ");
+        assert_eq!(
+            config.ui.tab_bar_left,
+            vec![TabBarStatusEntryConfig::Text {
+                text: "iris".into(),
+                fg: Some("#cba6f7".into()),
+                bg: None,
+                bold: true,
+            }]
+        );
+        assert_eq!(config.ui.tab_bar_left_separator, " | ");
     }
 
     #[test]

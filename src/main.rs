@@ -312,11 +312,15 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Desktop tab row placement: "top" or "bottom".
 # tab_bar_position = "top"
 
-# Ordered status entries at the right edge of the desktop tab bar.
+# Ordered status entries at the right and left edges of the desktop tab bar.
 # Supported types: zoom, hostname, datetime, text, and command.
 # Hostname, datetime, and command entries resolve on the Herdr server.
+# Text entries accept fg, bg (#rrggbb), and bold; command entries accept
+# ansi = true to keep SGR styling from their last output line.
 # tab_bar_right = []
 # tab_bar_right_separator = " "
+# tab_bar_left = []
+# tab_bar_left_separator = " "
 
 # Title Herdr writes to the terminal it runs in, which is what window managers
 # show in title, tab, and group bars. Tokens are {hostname}, {workspace}, {tab},

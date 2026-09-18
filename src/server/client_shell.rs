@@ -175,27 +175,8 @@ pub(super) fn snapshot(
                 .get(tab_index)
         })
         .is_some_and(|tab| tab.zoomed);
-    let tab_bar_right = app
-        .state
-        .tab_bar_right
-        .iter()
-        .filter_map(|segment| match segment {
-            crate::app::state::TabBarStatusSegment::Zoom if zoomed => {
-                Some(protocol::ClientShellTabStatusSegment {
-                    text: "ZOOM".to_owned(),
-                    accent: true,
-                })
-            }
-            crate::app::state::TabBarStatusSegment::Text(Some(text)) if !text.is_empty() => {
-                Some(protocol::ClientShellTabStatusSegment {
-                    text: text.clone(),
-                    accent: false,
-                })
-            }
-            crate::app::state::TabBarStatusSegment::Zoom
-            | crate::app::state::TabBarStatusSegment::Text(_) => None,
-        })
-        .collect();
+    let tab_bar_left = tab_bar_status_segments(&app.state.tab_bar_left, zoomed);
+    let tab_bar_right = tab_bar_status_segments(&app.state.tab_bar_right, zoomed);
 
     let product_announcement = app.state.product_announcement.as_ref().map(|announcement| {
         protocol::ClientShellProductAnnouncement {
@@ -233,6 +214,8 @@ pub(super) fn snapshot(
         focused_pane_id,
         tab_bar_right,
         tab_bar_right_separator: app.state.tab_bar_right_separator.clone(),
+        tab_bar_left,
+        tab_bar_left_separator: app.state.tab_bar_left_separator.clone(),
         agent_view_label,
         agent_order,
         workspaces,
@@ -241,6 +224,68 @@ pub(super) fn snapshot(
         agents,
         commands: app.client_shell_command_manifest(),
     }
+}
+
+fn tab_bar_status_color(
+    color: crate::app::state::TabBarStatusColor,
+) -> protocol::ClientShellStatusColor {
+    match color {
+        crate::app::state::TabBarStatusColor::Indexed(index) => protocol::ClientShellStatusColor {
+            indexed: Some(index),
+            rgb: None,
+        },
+        crate::app::state::TabBarStatusColor::Rgb(red, green, blue) => {
+            protocol::ClientShellStatusColor {
+                indexed: None,
+                rgb: Some((red, green, blue)),
+            }
+        }
+    }
+}
+
+/// Project one side's resolved segments. Styled segments also carry their plain
+/// text so a client that predates `spans` still renders the characters.
+fn tab_bar_status_segments(
+    segments: &[crate::app::state::TabBarStatusSegment],
+    zoomed: bool,
+) -> Vec<protocol::ClientShellTabStatusSegment> {
+    segments
+        .iter()
+        .filter_map(|segment| match segment {
+            crate::app::state::TabBarStatusSegment::Zoom if zoomed => {
+                Some(protocol::ClientShellTabStatusSegment {
+                    text: "ZOOM".to_owned(),
+                    accent: true,
+                    spans: Vec::new(),
+                })
+            }
+            crate::app::state::TabBarStatusSegment::Text(Some(text)) if !text.is_empty() => {
+                Some(protocol::ClientShellTabStatusSegment {
+                    text: text.clone(),
+                    accent: false,
+                    spans: Vec::new(),
+                })
+            }
+            crate::app::state::TabBarStatusSegment::Spans(spans) if !spans.is_empty() => {
+                Some(protocol::ClientShellTabStatusSegment {
+                    text: spans.iter().map(|span| span.text.as_str()).collect(),
+                    accent: false,
+                    spans: spans
+                        .iter()
+                        .map(|span| protocol::ClientShellTabStatusSpan {
+                            text: span.text.clone(),
+                            fg: span.fg.map(tab_bar_status_color),
+                            bg: span.bg.map(tab_bar_status_color),
+                            bold: span.bold,
+                        })
+                        .collect(),
+                })
+            }
+            crate::app::state::TabBarStatusSegment::Zoom
+            | crate::app::state::TabBarStatusSegment::Text(_)
+            | crate::app::state::TabBarStatusSegment::Spans(_) => None,
+        })
+        .collect()
 }
 
 pub(super) struct RenderedPaneSurface {

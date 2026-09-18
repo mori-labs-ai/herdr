@@ -107,10 +107,12 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
         crate::protocol::ClientShellTabStatusSegment {
             text: "ZOOM".into(),
             accent: true,
+            spans: Vec::new(),
         },
         crate::protocol::ClientShellTabStatusSegment {
             text: "host".into(),
             accent: false,
+            spans: Vec::new(),
         },
     ];
     projected.tab_bar_right_separator = " · ".into();
@@ -162,6 +164,119 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
         .map(|cell| cell.symbol.as_str())
         .collect::<String>();
     assert!(!top.contains("ZOOM · host"));
+}
+
+#[test]
+fn tab_bar_renders_the_left_status_area_before_the_tabs() {
+    let mut projected = snapshot();
+    projected.tab_bar_left = vec![
+        crate::protocol::ClientShellTabStatusSegment {
+            text: "iris".into(),
+            accent: false,
+            spans: vec![crate::protocol::ClientShellTabStatusSpan {
+                text: "iris".into(),
+                fg: Some(crate::protocol::ClientShellStatusColor {
+                    indexed: None,
+                    rgb: Some((0xff, 0x00, 0x00)),
+                }),
+                bg: None,
+                bold: true,
+            }],
+        },
+        crate::protocol::ClientShellTabStatusSegment {
+            text: "main".into(),
+            accent: false,
+            spans: Vec::new(),
+        },
+    ];
+    projected.tab_bar_left_separator = " | ".into();
+    projected.tab_bar_right = vec![crate::protocol::ClientShellTabStatusSegment {
+        text: "host".into(),
+        accent: false,
+        spans: Vec::new(),
+    }];
+    projected.tab_bar_right_separator = " ".into();
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.mobile_width_threshold = 0;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("left and right status");
+    let top = frame.cells[..frame.width as usize]
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+
+    // Cell index, not byte index: the sidebar divider is multi-byte.
+    let left = top
+        .char_indices()
+        .position(|(index, _)| top[index..].starts_with("iris | main"))
+        .expect("left status area");
+    assert!(top.trim_end().ends_with("host"));
+
+    // The styled span keeps its own color and weight.
+    let first = &frame.cells[left];
+    assert_eq!(
+        first.fg,
+        crate::protocol::color_to_u32(ratatui::style::Color::Rgb(0xff, 0x00, 0x00))
+    );
+    assert_eq!(
+        first.modifier & ratatui::style::Modifier::BOLD.bits(),
+        ratatui::style::Modifier::BOLD.bits()
+    );
+    // The unstyled segment after the separator keeps the theme color.
+    assert_ne!(frame.cells[left + 7].fg, first.fg);
+
+    // The tabs start after the left area plus its one column gap.
+    let tab_hit = state.hits.tabs.first().expect("a tab hit rect").0;
+    assert_eq!(usize::from(tab_hit.x), left + "iris | main".len() + 1);
+}
+
+#[test]
+fn narrow_tab_row_drops_the_left_status_area_before_the_right_one() {
+    let mut projected = snapshot();
+    projected.tab_bar_left = vec![crate::protocol::ClientShellTabStatusSegment {
+        text: "leftside".into(),
+        accent: false,
+        spans: Vec::new(),
+    }];
+    projected.tab_bar_left_separator = " ".into();
+    projected.tab_bar_right = vec![crate::protocol::ClientShellTabStatusSegment {
+        text: "host".into(),
+        accent: false,
+        spans: Vec::new(),
+    }];
+    projected.tab_bar_right_separator = " ".into();
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.mobile_width_threshold = 0;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let top = |state: &mut ClientShellState, width: u16| {
+        let frame = state.compose(width, 20).expect("tab row frame");
+        frame.cells[..frame.width as usize]
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>()
+    };
+
+    let wide = top(&mut state, 60);
+    assert!(wide.contains("leftside"));
+    assert!(wide.contains("host"));
+
+    // Narrow enough that only one status area still leaves a usable tab strip:
+    // the left one collapses first and the right one survives.
+    let narrow = top(&mut state, 55);
+    assert!(!narrow.contains("leftside"));
+    assert!(narrow.contains("host"));
+
+    // Narrower still and both areas yield to the tabs and their controls.
+    let narrowest = top(&mut state, 46);
+    assert!(!narrowest.contains("leftside"));
+    assert!(!narrowest.contains("host"));
 }
 
 #[test]

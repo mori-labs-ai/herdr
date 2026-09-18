@@ -157,8 +157,8 @@ pub enum AppEvent {
     /// A configured tab bar status command finished.
     TabBarCommandFinished {
         generation: u64,
-        segment_index: usize,
-        result: Result<Option<String>, String>,
+        slot: crate::app::state::TabBarStatusSlot,
+        result: Result<Option<Vec<crate::app::state::TabBarStatusSpan>>, String>,
     },
     /// A plugin action or event command finished.
     PluginCommandFinished {

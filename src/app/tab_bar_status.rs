@@ -9,23 +9,27 @@ use std::{
 
 use tokio::io::AsyncReadExt;
 
-use super::{state::TabBarStatusSegment, App};
-use crate::config::TabBarRightEntryConfig;
+use super::{
+    state::{AppState, TabBarStatusColor, TabBarStatusSegment, TabBarStatusSlot, TabBarStatusSpan},
+    App,
+};
+use crate::config::{TabBarSide, TabBarStatusEntryConfig};
 
 const DATETIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_STATUS_TEXT_CHARS: usize = 80;
 
 pub(super) struct TabBarDatetimeRuntime {
-    segment_index: usize,
+    slot: TabBarStatusSlot,
     format: time::format_description::OwnedFormatItem,
 }
 
 pub(super) struct TabBarCommandRuntime {
-    segment_index: usize,
+    slot: TabBarStatusSlot,
     command: String,
     interval: Duration,
     timeout: Duration,
+    ansi: bool,
     next_run_at: std::time::Instant,
     task: Option<StatusCommandTask>,
 }
@@ -41,57 +45,102 @@ impl Drop for TabBarCommandRuntime {
     }
 }
 
+/// Both tab row status areas resolve through this one function, keyed by side.
+fn segments_mut(state: &mut AppState, side: TabBarSide) -> &mut Vec<TabBarStatusSegment> {
+    match side {
+        TabBarSide::Left => &mut state.tab_bar_left,
+        TabBarSide::Right => &mut state.tab_bar_right,
+    }
+}
+
 impl App {
     pub(super) fn configure_tab_bar_status(
         &mut self,
-        entries: &[TabBarRightEntryConfig],
-        separator: &str,
+        left: (&[TabBarStatusEntryConfig], &str),
+        right: (&[TabBarStatusEntryConfig], &str),
     ) {
         self.tab_bar_status_generation = self.tab_bar_status_generation.wrapping_add(1);
         self.tab_bar_datetimes.clear();
         self.tab_bar_commands.clear();
-        self.state.tab_bar_right.clear();
-        self.state.tab_bar_right_separator = sanitize_separator(separator);
 
         let now = std::time::Instant::now();
+        for (side, entries, separator) in [
+            (TabBarSide::Left, left.0, left.1),
+            (TabBarSide::Right, right.0, right.1),
+        ] {
+            let segments = self.resolve_tab_bar_status_entries(side, entries, now);
+            *segments_mut(&mut self.state, side) = segments;
+            match side {
+                TabBarSide::Left => {
+                    self.state.tab_bar_left_separator = sanitize_separator(separator)
+                }
+                TabBarSide::Right => {
+                    self.state.tab_bar_right_separator = sanitize_separator(separator)
+                }
+            }
+        }
+
+        self.next_tab_bar_datetime_refresh =
+            (!self.tab_bar_datetimes.is_empty()).then_some(now + DATETIME_REFRESH_INTERVAL);
+    }
+
+    fn resolve_tab_bar_status_entries(
+        &mut self,
+        side: TabBarSide,
+        entries: &[TabBarStatusEntryConfig],
+        now: std::time::Instant,
+    ) -> Vec<TabBarStatusSegment> {
+        let mut segments = Vec::new();
         for entry in entries
             .iter()
-            .take(crate::config::MAX_TAB_BAR_RIGHT_ENTRIES)
+            .take(crate::config::MAX_TAB_BAR_STATUS_ENTRIES)
         {
             match entry {
-                TabBarRightEntryConfig::Zoom => {
-                    self.state.tab_bar_right.push(TabBarStatusSegment::Zoom);
+                TabBarStatusEntryConfig::Zoom => {
+                    segments.push(TabBarStatusSegment::Zoom);
                 }
-                TabBarRightEntryConfig::Hostname => {
-                    self.state
-                        .tab_bar_right
-                        .push(TabBarStatusSegment::Text(sanitize_status_text(
-                            crate::platform::hostname().as_deref().unwrap_or_default(),
-                        )));
+                TabBarStatusEntryConfig::Hostname => {
+                    segments.push(TabBarStatusSegment::Text(sanitize_status_text(
+                        crate::platform::hostname().as_deref().unwrap_or_default(),
+                    )));
                 }
-                TabBarRightEntryConfig::Datetime { format } => {
+                TabBarStatusEntryConfig::Datetime { format } => {
                     let Ok(format) = crate::config::parse_tab_bar_datetime_format(format) else {
                         continue;
                     };
                     let value = format_local_datetime(&format);
-                    let segment_index = self.state.tab_bar_right.len();
-                    self.state
-                        .tab_bar_right
-                        .push(TabBarStatusSegment::Text(value));
-                    self.tab_bar_datetimes.push(TabBarDatetimeRuntime {
-                        segment_index,
-                        format,
-                    });
+                    let slot = TabBarStatusSlot {
+                        side,
+                        index: segments.len(),
+                    };
+                    segments.push(TabBarStatusSegment::Text(value));
+                    self.tab_bar_datetimes
+                        .push(TabBarDatetimeRuntime { slot, format });
                 }
-                TabBarRightEntryConfig::Text { text } => {
-                    self.state
-                        .tab_bar_right
-                        .push(TabBarStatusSegment::Text(sanitize_literal_text(text)));
+                TabBarStatusEntryConfig::Text { text, fg, bg, bold } => {
+                    let fg = entry_color(fg.as_deref());
+                    let bg = entry_color(bg.as_deref());
+                    if fg.is_none() && bg.is_none() && !bold {
+                        segments.push(TabBarStatusSegment::Text(sanitize_literal_text(text)));
+                        continue;
+                    }
+                    let spans = sanitize_literal_text(text)
+                        .map(|text| {
+                            vec![TabBarStatusSpan {
+                                text,
+                                fg,
+                                bg,
+                                bold: *bold,
+                            }]
+                        })
+                        .unwrap_or_default();
+                    segments.push(TabBarStatusSegment::Spans(spans));
                 }
-                TabBarRightEntryConfig::Command {
+                TabBarStatusEntryConfig::Command {
                     command,
                     interval_seconds,
                     timeout_seconds,
+                    ansi,
                 } => {
                     if !crate::platform::status_commands_supported()
                         || command.trim().is_empty()
@@ -102,24 +151,24 @@ impl App {
                     {
                         continue;
                     }
-                    let segment_index = self.state.tab_bar_right.len();
-                    self.state
-                        .tab_bar_right
-                        .push(TabBarStatusSegment::Text(None));
+                    let slot = TabBarStatusSlot {
+                        side,
+                        index: segments.len(),
+                    };
+                    segments.push(TabBarStatusSegment::Spans(Vec::new()));
                     self.tab_bar_commands.push(TabBarCommandRuntime {
-                        segment_index,
+                        slot,
                         command: command.clone(),
                         interval: Duration::from_secs(*interval_seconds),
                         timeout: Duration::from_secs(*timeout_seconds),
+                        ansi: *ansi,
                         next_run_at: now,
                         task: None,
                     });
                 }
             }
         }
-
-        self.next_tab_bar_datetime_refresh =
-            (!self.tab_bar_datetimes.is_empty()).then_some(now + DATETIME_REFRESH_INTERVAL);
+        segments
     }
 
     pub(crate) fn handle_tab_bar_status_tasks(&mut self, now: std::time::Instant) -> bool {
@@ -132,7 +181,7 @@ impl App {
             for runtime in &self.tab_bar_datetimes {
                 let value = format_local_datetime(&runtime.format);
                 if let Some(TabBarStatusSegment::Text(current)) =
-                    self.state.tab_bar_right.get_mut(runtime.segment_index)
+                    segments_mut(&mut self.state, runtime.slot.side).get_mut(runtime.slot.index)
                 {
                     changed |= *current != value;
                     *current = value;
@@ -159,9 +208,10 @@ impl App {
             runtime.task = Some(spawn_status_command(
                 self.event_tx.clone(),
                 generation,
-                runtime.segment_index,
+                runtime.slot,
                 runtime.command.clone(),
                 runtime.timeout,
+                runtime.ansi,
                 environment.clone(),
                 cwd.clone(),
             ));
@@ -182,8 +232,8 @@ impl App {
     pub(super) fn handle_tab_bar_command_finished(
         &mut self,
         generation: u64,
-        segment_index: usize,
-        result: Result<Option<String>, String>,
+        slot: TabBarStatusSlot,
+        result: Result<Option<Vec<TabBarStatusSpan>>, String>,
     ) -> bool {
         if generation != self.tab_bar_status_generation {
             return false;
@@ -191,21 +241,21 @@ impl App {
         let Some(runtime) = self
             .tab_bar_commands
             .iter_mut()
-            .find(|runtime| runtime.segment_index == segment_index)
+            .find(|runtime| runtime.slot == slot)
         else {
             return false;
         };
         runtime.task = None;
 
         let output = match result {
-            Ok(output) => output,
+            Ok(output) => output.unwrap_or_default(),
             Err(error) => {
                 tracing::warn!(command = %runtime.command, error, "tab bar status command failed");
-                None
+                Vec::new()
             }
         };
-        let Some(TabBarStatusSegment::Text(current)) =
-            self.state.tab_bar_right.get_mut(segment_index)
+        let Some(TabBarStatusSegment::Spans(current)) =
+            segments_mut(&mut self.state, slot.side).get_mut(slot.index)
         else {
             return false;
         };
@@ -213,6 +263,11 @@ impl App {
         *current = output;
         changed
     }
+}
+
+fn entry_color(value: Option<&str>) -> Option<TabBarStatusColor> {
+    let (red, green, blue) = crate::config::parse_tab_bar_status_color(value?)?;
+    Some(TabBarStatusColor::Rgb(red, green, blue))
 }
 
 fn format_local_datetime(format: &time::format_description::OwnedFormatItem) -> Option<String> {
@@ -248,6 +303,53 @@ fn sanitize_status_text(value: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// Apply the plain-text sanitizer across a styled line: drop control and format
+/// characters, trim the line's outer whitespace, and cap the total width.
+fn sanitize_status_spans(spans: Vec<TabBarStatusSpan>) -> Option<Vec<TabBarStatusSpan>> {
+    let mut spans = spans
+        .into_iter()
+        .map(|mut span| {
+            span.text = span
+                .text
+                .chars()
+                .filter(|character| {
+                    !character.is_control() && !is_unicode_format_control(*character)
+                })
+                .collect();
+            span
+        })
+        .collect::<Vec<_>>();
+
+    for span in spans.iter_mut() {
+        span.text = span.text.trim_start().to_owned();
+        if !span.text.is_empty() {
+            break;
+        }
+    }
+    for span in spans.iter_mut().rev() {
+        span.text = span.text.trim_end().to_owned();
+        if !span.text.is_empty() {
+            break;
+        }
+    }
+
+    let mut remaining = MAX_STATUS_TEXT_CHARS;
+    let mut sanitized = Vec::new();
+    for mut span in spans {
+        if remaining == 0 {
+            break;
+        }
+        if span.text.chars().count() > remaining {
+            span.text = span.text.chars().take(remaining).collect();
+        }
+        remaining -= span.text.chars().count();
+        if !span.text.is_empty() {
+            sanitized.push(span);
+        }
+    }
+    (!sanitized.is_empty()).then_some(sanitized)
+}
+
 fn is_unicode_format_control(character: char) -> bool {
     matches!(
         character,
@@ -275,11 +377,26 @@ fn is_unicode_format_control(character: char) -> bool {
     )
 }
 
-fn command_output_text(output: &[u8]) -> Option<String> {
+fn command_output_spans(output: &[u8], ansi: bool) -> Option<Vec<TabBarStatusSpan>> {
+    if ansi {
+        return sanitize_status_spans(ansi_spans(last_output_line(output)));
+    }
     let output = String::from_utf8_lossy(output);
     let output = strip_terminal_control_sequences(output.as_bytes());
     let output = String::from_utf8_lossy(&output);
-    output.lines().next_back().and_then(sanitize_status_text)
+    output
+        .lines()
+        .next_back()
+        .and_then(sanitize_status_text)
+        .map(|text| vec![TabBarStatusSpan::plain(text)])
+}
+
+fn last_output_line(value: &[u8]) -> &[u8] {
+    let value = value.strip_suffix(b"\n").unwrap_or(value);
+    match value.iter().rposition(|byte| *byte == b'\n') {
+        Some(index) => &value[index + 1..],
+        None => value,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -292,19 +409,29 @@ enum ControlSequenceState {
     StString,
 }
 
-fn strip_terminal_control_sequences(value: &[u8]) -> Vec<u8> {
+enum ScanEvent<'a> {
+    Text(u8),
+    Csi { params: &'a [u8], final_byte: u8 },
+}
+
+/// Walk terminal output once, reporting plain bytes and complete CSI sequences.
+/// Callers either drop every sequence or interpret the SGR ones.
+fn scan_terminal_output(value: &[u8], mut on_event: impl FnMut(ScanEvent)) {
     use ControlSequenceState::*;
 
-    let mut output = Vec::with_capacity(value.len());
     let mut state = Text;
+    let mut csi = Vec::new();
     for &byte in value {
         state = match (state, byte) {
             (Text, b'\x1b') => Escape,
             (Text, _) => {
-                output.push(byte);
+                on_event(ScanEvent::Text(byte));
                 Text
             }
-            (Escape, b'[') => Csi,
+            (Escape, b'[') => {
+                csi.clear();
+                Csi
+            }
             (Escape, b']') => Osc,
             (Escape, b'P' | b'X' | b'^' | b'_') => StString,
             (Escape, 0x20..=0x2f) => EscapeIntermediate,
@@ -313,7 +440,7 @@ fn strip_terminal_control_sequences(value: &[u8]) -> Vec<u8> {
             (Escape, b'\x18' | b'\x1a') => Text,
             (Escape, byte) if byte.is_ascii_control() => Escape,
             (Escape, _) => {
-                output.push(byte);
+                on_event(ScanEvent::Text(byte));
                 Text
             }
             (EscapeIntermediate, 0x20..=0x2f) => EscapeIntermediate,
@@ -322,16 +449,25 @@ fn strip_terminal_control_sequences(value: &[u8]) -> Vec<u8> {
             (EscapeIntermediate, b'\x18' | b'\x1a') => Text,
             (EscapeIntermediate, byte) if byte.is_ascii_control() => EscapeIntermediate,
             (EscapeIntermediate, _) => {
-                output.push(byte);
+                on_event(ScanEvent::Text(byte));
                 Text
             }
-            (Csi, 0x20..=0x3f) => Csi,
-            (Csi, 0x40..=0x7e) => Text,
+            (Csi, 0x20..=0x3f) => {
+                csi.push(byte);
+                Csi
+            }
+            (Csi, 0x40..=0x7e) => {
+                on_event(ScanEvent::Csi {
+                    params: &csi,
+                    final_byte: byte,
+                });
+                Text
+            }
             (Csi, b'\x1b') => Escape,
             (Csi, b'\x18' | b'\x1a') => Text,
             (Csi, byte) if byte.is_ascii_control() => Csi,
             (Csi, _) => {
-                output.push(byte);
+                on_event(ScanEvent::Text(byte));
                 Text
             }
             (Osc, b'\x07') => Text,
@@ -343,7 +479,140 @@ fn strip_terminal_control_sequences(value: &[u8]) -> Vec<u8> {
             (StString, _) => StString,
         };
     }
+}
+
+fn strip_terminal_control_sequences(value: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(value.len());
+    scan_terminal_output(value, |event| {
+        if let ScanEvent::Text(byte) = event {
+            output.push(byte);
+        }
+    });
     output
+}
+
+#[derive(Clone, Copy, Default)]
+struct SgrStyle {
+    fg: Option<TabBarStatusColor>,
+    bg: Option<TabBarStatusColor>,
+    bold: bool,
+}
+
+impl SgrStyle {
+    fn span(self, text: Vec<u8>) -> TabBarStatusSpan {
+        TabBarStatusSpan {
+            text: String::from_utf8_lossy(&text).into_owned(),
+            fg: self.fg,
+            bg: self.bg,
+            bold: self.bold,
+        }
+    }
+
+    fn apply(&mut self, params: &[u32]) {
+        let mut index = 0;
+        while index < params.len() {
+            let param = params[index];
+            index += 1;
+            match param {
+                0 => *self = Self::default(),
+                1 => self.bold = true,
+                22 => self.bold = false,
+                39 => self.fg = None,
+                49 => self.bg = None,
+                30..=37 => self.fg = Some(TabBarStatusColor::Indexed((param - 30) as u8)),
+                90..=97 => self.fg = Some(TabBarStatusColor::Indexed((param - 90 + 8) as u8)),
+                40..=47 => self.bg = Some(TabBarStatusColor::Indexed((param - 40) as u8)),
+                100..=107 => self.bg = Some(TabBarStatusColor::Indexed((param - 100 + 8) as u8)),
+                38 | 48 => {
+                    let (color, consumed) = extended_sgr_color(&params[index..]);
+                    index += consumed;
+                    match (param, color) {
+                        (38, Some(color)) => self.fg = Some(color),
+                        (_, Some(color)) => self.bg = Some(color),
+                        (_, None) => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// `5;n` selects a palette index and `2;r;g;b` a direct color. A truncated or
+/// unknown form consumes the rest of the sequence rather than guessing at it.
+fn extended_sgr_color(params: &[u32]) -> (Option<TabBarStatusColor>, usize) {
+    match params.first() {
+        Some(5) => match params.get(1) {
+            Some(&index) if index <= 255 => (Some(TabBarStatusColor::Indexed(index as u8)), 2),
+            _ => (None, params.len()),
+        },
+        Some(2) => match (params.get(1), params.get(2), params.get(3)) {
+            (Some(&red), Some(&green), Some(&blue))
+                if red <= 255 && green <= 255 && blue <= 255 =>
+            {
+                (
+                    Some(TabBarStatusColor::Rgb(red as u8, green as u8, blue as u8)),
+                    4,
+                )
+            }
+            _ => (None, params.len()),
+        },
+        _ => (None, params.len()),
+    }
+}
+
+/// Numeric SGR parameters, or `None` when the sequence carries private markers
+/// or intermediates and is therefore not a plain `ESC [ ... m`.
+fn sgr_params(raw: &[u8]) -> Option<Vec<u32>> {
+    if !raw
+        .iter()
+        .all(|byte| byte.is_ascii_digit() || *byte == b';')
+    {
+        return None;
+    }
+    if raw.is_empty() {
+        return Some(vec![0]);
+    }
+    Some(
+        raw.split(|byte| *byte == b';')
+            .map(|part| {
+                if part.is_empty() {
+                    return 0;
+                }
+                std::str::from_utf8(part)
+                    .ok()
+                    .and_then(|part| part.parse::<u32>().ok())
+                    // Out of range parameters are ignored, not reset.
+                    .unwrap_or(u32::MAX)
+            })
+            .collect(),
+    )
+}
+
+fn ansi_spans(value: &[u8]) -> Vec<TabBarStatusSpan> {
+    let mut spans = Vec::new();
+    let mut text = Vec::new();
+    let mut style = SgrStyle::default();
+    scan_terminal_output(value, |event| match event {
+        ScanEvent::Text(byte) => text.push(byte),
+        ScanEvent::Csi {
+            params,
+            final_byte: b'm',
+        } => {
+            let Some(params) = sgr_params(params) else {
+                return;
+            };
+            if !text.is_empty() {
+                spans.push(style.span(std::mem::take(&mut text)));
+            }
+            style.apply(&params);
+        }
+        ScanEvent::Csi { .. } => {}
+    });
+    if !text.is_empty() {
+        spans.push(style.span(text));
+    }
+    spans
 }
 
 async fn read_last_output_line(
@@ -419,12 +688,14 @@ impl StatusCommandControl {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // One status command's full spawn context.
 fn spawn_status_command(
     event_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
     generation: u64,
-    segment_index: usize,
+    slot: TabBarStatusSlot,
     command: String,
     timeout: Duration,
+    ansi: bool,
     environment: Vec<(String, String)>,
     cwd: Option<std::path::PathBuf>,
 ) -> StatusCommandTask {
@@ -440,6 +711,7 @@ fn spawn_status_command(
             command,
             timeout,
             deadline,
+            ansi,
             environment,
             cwd,
         )
@@ -448,7 +720,7 @@ fn spawn_status_command(
         let _ = event_tx
             .send(crate::events::AppEvent::TabBarCommandFinished {
                 generation,
-                segment_index,
+                slot,
                 result,
             })
             .await;
@@ -464,9 +736,10 @@ async fn run_status_command(
     command: String,
     timeout: Duration,
     deadline: tokio::time::Instant,
+    ansi: bool,
     environment: Vec<(String, String)>,
     cwd: Option<std::path::PathBuf>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<Vec<TabBarStatusSpan>>, String> {
     if control.is_terminated() || tokio::time::Instant::now() >= deadline {
         return Err(format!("timed out after {}s", timeout.as_secs()));
     }
@@ -504,7 +777,7 @@ async fn run_status_command(
         let status = status.map_err(|error| error.to_string())?;
         let output = output.map_err(|error| error.to_string())?;
         if status.success() {
-            Ok(command_output_text(&output))
+            Ok(command_output_spans(&output, ansi))
         } else {
             Err(format!("exited with {status}"))
         }
@@ -529,6 +802,27 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         )
+    }
+
+    type StatusSides<'a> = (
+        (&'a [TabBarStatusEntryConfig], &'a str),
+        (&'a [TabBarStatusEntryConfig], &'a str),
+    );
+
+    /// Configure only the right side, which is what most of these tests care about.
+    fn right<'a>(entries: &'a [TabBarStatusEntryConfig], separator: &'a str) -> StatusSides<'a> {
+        ((&[], " "), (entries, separator))
+    }
+
+    fn right_slot(index: usize) -> TabBarStatusSlot {
+        TabBarStatusSlot {
+            side: TabBarSide::Right,
+            index,
+        }
+    }
+
+    fn plain(text: &str) -> Vec<TabBarStatusSpan> {
+        vec![TabBarStatusSpan::plain(text.into())]
     }
 
     #[cfg(unix)]
@@ -557,9 +851,10 @@ mod tests {
         spawn_status_command(
             event_tx,
             7,
-            3,
+            right_slot(3),
             MULTILINE_COMMAND.into(),
             Duration::from_secs(2),
+            false,
             Vec::new(),
             None,
         );
@@ -572,9 +867,9 @@ mod tests {
             event,
             AppEvent::TabBarCommandFinished {
                 generation: 7,
-                segment_index: 3,
+                slot,
                 result: Ok(Some(ref output)),
-            } if output == "final"
+            } if slot == right_slot(3) && *output == plain("final")
         ));
     }
 
@@ -587,9 +882,10 @@ mod tests {
         spawn_status_command(
             event_tx,
             7,
-            3,
+            right_slot(3),
             command,
             Duration::from_secs(1),
+            false,
             Vec::new(),
             None,
         );
@@ -618,9 +914,10 @@ mod tests {
         spawn_status_command(
             event_tx,
             7,
-            3,
+            right_slot(3),
             OVER_CAP_COMMAND.into(),
             Duration::from_secs(2),
+            false,
             Vec::new(),
             None,
         );
@@ -634,30 +931,36 @@ mod tests {
             AppEvent::TabBarCommandFinished {
                 result: Ok(Some(ref output)),
                 ..
-            } if output == "READY"
+            } if *output == plain("READY")
         ));
     }
 
     #[test]
     fn stale_command_result_does_not_replace_reloaded_status() {
         let mut app = test_app();
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Command {
-                command: MULTILINE_COMMAND.into(),
-                interval_seconds: 5,
-                timeout_seconds: 2,
-            }],
-            " ",
-        );
+        let commands = [TabBarStatusEntryConfig::Command {
+            command: MULTILINE_COMMAND.into(),
+            interval_seconds: 5,
+            timeout_seconds: 2,
+            ansi: false,
+        }];
+        let (left, r) = right(&commands, " ");
+        app.configure_tab_bar_status(left, r);
         let stale_generation = app.tab_bar_status_generation;
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Text {
-                text: "fresh".into(),
-            }],
-            " ",
-        );
+        let fresh = [TabBarStatusEntryConfig::Text {
+            text: "fresh".into(),
+            fg: None,
+            bg: None,
+            bold: false,
+        }];
+        let (left, r) = right(&fresh, " ");
+        app.configure_tab_bar_status(left, r);
 
-        app.handle_tab_bar_command_finished(stale_generation, 0, Ok(Some("stale".into())));
+        app.handle_tab_bar_command_finished(
+            stale_generation,
+            right_slot(0),
+            Ok(Some(plain("stale"))),
+        );
 
         assert_eq!(
             app.state.tab_bar_right,
@@ -676,14 +979,14 @@ mod tests {
             survived.display()
         );
         let mut app = test_app();
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Command {
-                command,
-                interval_seconds: 5,
-                timeout_seconds: 20,
-            }],
-            " ",
-        );
+        let commands = [TabBarStatusEntryConfig::Command {
+            command,
+            interval_seconds: 5,
+            timeout_seconds: 20,
+            ansi: false,
+        }];
+        let (left, r) = right(&commands, " ");
+        app.configure_tab_bar_status(left, r);
         app.handle_tab_bar_status_tasks(std::time::Instant::now());
         for _ in 0..50 {
             if descendant_started.exists() {
@@ -696,12 +999,14 @@ mod tests {
             "status command descendant did not start"
         );
 
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Text {
-                text: "reloaded".into(),
-            }],
-            " ",
-        );
+        let reloaded = [TabBarStatusEntryConfig::Text {
+            text: "reloaded".into(),
+            fg: None,
+            bg: None,
+            bold: false,
+        }];
+        let (left, r) = right(&reloaded, " ");
+        app.configure_tab_bar_status(left, r);
 
         // Task cancellation is delivered when Tokio next polls the task. Block
         // this current-thread test runtime long enough for the descendant to
@@ -722,14 +1027,14 @@ mod tests {
     #[tokio::test]
     async fn in_flight_command_has_no_second_deadline() {
         let mut app = test_app();
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Command {
-                command: MULTILINE_COMMAND.into(),
-                interval_seconds: 5,
-                timeout_seconds: 2,
-            }],
-            " ",
-        );
+        let commands = [TabBarStatusEntryConfig::Command {
+            command: MULTILINE_COMMAND.into(),
+            interval_seconds: 5,
+            timeout_seconds: 2,
+            ansi: false,
+        }];
+        let (left, r) = right(&commands, " ");
+        app.configure_tab_bar_status(left, r);
 
         let now = std::time::Instant::now();
         assert!(app.next_tab_bar_status_deadline().is_some());
@@ -742,12 +1047,11 @@ mod tests {
     #[test]
     fn datetime_refresh_updates_its_segment_once_per_deadline() {
         let mut app = test_app();
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Datetime {
-                format: "%Y-%m-%d %H:%M:%S".into(),
-            }],
-            " ",
-        );
+        let entries = [TabBarStatusEntryConfig::Datetime {
+            format: "%Y-%m-%d %H:%M:%S".into(),
+        }];
+        let (left, r) = right(&entries, " ");
+        app.configure_tab_bar_status(left, r);
         app.state.tab_bar_right[0] = TabBarStatusSegment::Text(None);
         let deadline = app
             .next_tab_bar_datetime_refresh
@@ -762,53 +1066,325 @@ mod tests {
     }
 
     #[test]
+    fn both_sides_resolve_through_one_registry() {
+        let mut app = test_app();
+        let left_entries = [
+            TabBarStatusEntryConfig::Text {
+                text: "iris".into(),
+                fg: Some("#ff8800".into()),
+                bg: None,
+                bold: true,
+            },
+            TabBarStatusEntryConfig::Datetime {
+                format: "%H:%M".into(),
+            },
+        ];
+        let right_entries = [TabBarStatusEntryConfig::Datetime {
+            format: "%H:%M".into(),
+        }];
+        app.configure_tab_bar_status((&left_entries, " | "), (&right_entries, " · "));
+
+        assert_eq!(
+            app.state.tab_bar_left[0],
+            TabBarStatusSegment::Spans(vec![TabBarStatusSpan {
+                text: "iris".into(),
+                fg: Some(TabBarStatusColor::Rgb(0xff, 0x88, 0x00)),
+                bg: None,
+                bold: true,
+            }])
+        );
+        assert_eq!(app.state.tab_bar_left_separator, " | ");
+        assert_eq!(app.state.tab_bar_right_separator, " · ");
+        assert_eq!(
+            app.tab_bar_datetimes
+                .iter()
+                .map(|runtime| runtime.slot)
+                .collect::<Vec<_>>(),
+            vec![
+                TabBarStatusSlot {
+                    side: TabBarSide::Left,
+                    index: 1,
+                },
+                right_slot(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn unstyled_text_entries_stay_plain_and_bad_colors_are_dropped() {
+        let mut app = test_app();
+        let entries = [
+            TabBarStatusEntryConfig::Text {
+                text: "plain".into(),
+                fg: None,
+                bg: None,
+                bold: false,
+            },
+            TabBarStatusEntryConfig::Text {
+                text: "bad".into(),
+                fg: Some("blue".into()),
+                bg: None,
+                bold: true,
+            },
+        ];
+        let (left, r) = right(&entries, " ");
+        app.configure_tab_bar_status(left, r);
+
+        assert_eq!(
+            app.state.tab_bar_right,
+            vec![
+                TabBarStatusSegment::Text(Some("plain".into())),
+                TabBarStatusSegment::Spans(vec![TabBarStatusSpan {
+                    text: "bad".into(),
+                    fg: None,
+                    bg: None,
+                    bold: true,
+                }]),
+            ]
+        );
+    }
+
+    #[test]
     fn command_output_uses_sanitized_last_line() {
         assert_eq!(
-            command_output_text(b"old\n win\x1b[31mter\r\n"),
-            Some("winter".into())
+            command_output_spans(b"old\n win\x1b[31mter\r\n", false),
+            Some(plain("winter"))
         );
-        assert_eq!(command_output_text(b"\r\n"), None);
+        assert_eq!(command_output_spans(b"\r\n", false), None);
     }
 
     #[test]
     fn command_output_strips_ansi_style_sequences() {
         assert_eq!(
-            command_output_text(b"\x1b[32mHELLO\x1b[0m"),
-            Some("HELLO".into())
+            command_output_spans(b"\x1b[32mHELLO\x1b[0m", false),
+            Some(plain("HELLO"))
         );
     }
 
     #[test]
     fn command_output_strips_terminal_control_sequence_families() {
         assert_eq!(
-            command_output_text(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"),
-            Some("link".into())
+            command_output_spans(
+                b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\",
+                false
+            ),
+            Some(plain("link"))
         );
         assert_eq!(
-            command_output_text(b"\x1bPignored\x1b\\visible\x1b7"),
-            Some("visible".into())
+            command_output_spans(b"\x1bPignored\x1b\\visible\x1b7", false),
+            Some(plain("visible"))
         );
-        assert_eq!(command_output_text(b"\x1b[31m\x1b[0m"), None);
+        assert_eq!(command_output_spans(b"\x1b[31m\x1b[0m", false), None);
         assert_eq!(
-            command_output_text(b"\x1b\x07[32mHELLO\x1b[0m"),
-            Some("HELLO".into())
-        );
-        assert_eq!(
-            command_output_text(b"\x1bPignored\x18VISIBLE"),
-            Some("VISIBLE".into())
+            command_output_spans(b"\x1b\x07[32mHELLO\x1b[0m", false),
+            Some(plain("HELLO"))
         );
         assert_eq!(
-            command_output_text(b"\x1bPignored\x1b7VISIBLE"),
-            Some("VISIBLE".into())
+            command_output_spans(b"\x1bPignored\x18VISIBLE", false),
+            Some(plain("VISIBLE"))
         );
         assert_eq!(
-            command_output_text(b"\x1b]ignored\x1aVISIBLE"),
-            Some("VISIBLE".into())
+            command_output_spans(b"\x1bPignored\x1b7VISIBLE", false),
+            Some(plain("VISIBLE"))
         );
-        assert_eq!(command_output_text(b"\xc2\x1b[31m\xa2"), Some("��".into()));
+        assert_eq!(
+            command_output_spans(b"\x1b]ignored\x1aVISIBLE", false),
+            Some(plain("VISIBLE"))
+        );
+        assert_eq!(
+            command_output_spans(b"\xc2\x1b[31m\xa2", false),
+            Some(plain("��"))
+        );
 
         let styled = format!("\x1b[38;2;1;2;3m{}\x1b[0m", "x".repeat(80));
-        assert_eq!(command_output_text(styled.as_bytes()), Some("x".repeat(80)));
+        assert_eq!(
+            command_output_spans(styled.as_bytes(), false),
+            Some(plain(&"x".repeat(80)))
+        );
+    }
+
+    fn spans(value: &str) -> Vec<TabBarStatusSpan> {
+        ansi_spans(value.as_bytes())
+    }
+
+    fn span(
+        text: &str,
+        fg: Option<TabBarStatusColor>,
+        bg: Option<TabBarStatusColor>,
+        bold: bool,
+    ) -> TabBarStatusSpan {
+        TabBarStatusSpan {
+            text: text.into(),
+            fg,
+            bg,
+            bold,
+        }
+    }
+
+    #[test]
+    fn sgr_parses_basic_and_bright_colors() {
+        use TabBarStatusColor::Indexed;
+
+        assert_eq!(
+            spans("\x1b[31mred\x1b[92mbright\x1b[0mplain"),
+            vec![
+                span("red", Some(Indexed(1)), None, false),
+                span("bright", Some(Indexed(10)), None, false),
+                span("plain", None, None, false),
+            ]
+        );
+        assert_eq!(
+            spans("\x1b[44mbg\x1b[104mbright\x1b[49mnone"),
+            vec![
+                span("bg", None, Some(Indexed(4)), false),
+                span("bright", None, Some(Indexed(12)), false),
+                span("none", None, None, false),
+            ]
+        );
+        assert_eq!(
+            spans("\x1b[37;40mboth"),
+            vec![span("both", Some(Indexed(7)), Some(Indexed(0)), false)]
+        );
+    }
+
+    #[test]
+    fn sgr_parses_bold_and_its_resets() {
+        assert_eq!(
+            spans("\x1b[1mbold\x1b[22mnormal"),
+            vec![
+                span("bold", None, None, true),
+                span("normal", None, None, false),
+            ]
+        );
+        assert_eq!(
+            spans("\x1b[1;31mboth\x1b[39mkeeps bold"),
+            vec![
+                span("both", Some(TabBarStatusColor::Indexed(1)), None, true),
+                span("keeps bold", None, None, true),
+            ]
+        );
+        // A bare `ESC [ m` is `ESC [ 0 m`.
+        assert_eq!(
+            spans("\x1b[1mbold\x1b[mreset"),
+            vec![
+                span("bold", None, None, true),
+                span("reset", None, None, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn sgr_parses_indexed_and_truecolor_forms() {
+        assert_eq!(
+            spans("\x1b[38;5;208mfg\x1b[48;5;236mbg"),
+            vec![
+                span("fg", Some(TabBarStatusColor::Indexed(208)), None, false),
+                span(
+                    "bg",
+                    Some(TabBarStatusColor::Indexed(208)),
+                    Some(TabBarStatusColor::Indexed(236)),
+                    false
+                ),
+            ]
+        );
+        assert_eq!(
+            spans("\x1b[38;2;10;20;30;48;2;1;2;3mtrue"),
+            vec![span(
+                "true",
+                Some(TabBarStatusColor::Rgb(10, 20, 30)),
+                Some(TabBarStatusColor::Rgb(1, 2, 3)),
+                false
+            )]
+        );
+    }
+
+    #[test]
+    fn sgr_ignores_unknown_parameters_and_garbage() {
+        // Unknown parameters are skipped without disturbing their neighbours.
+        assert_eq!(
+            spans("\x1b[3;31;53mstyled"),
+            vec![span(
+                "styled",
+                Some(TabBarStatusColor::Indexed(1)),
+                None,
+                false
+            )]
+        );
+        // Out of range values are ignored rather than treated as a reset.
+        assert_eq!(
+            spans("\x1b[1m\x1b[99999mstill bold"),
+            vec![span("still bold", None, None, true)]
+        );
+        // A truncated extended color leaves the style alone.
+        assert_eq!(
+            spans("\x1b[38;5mtruncated"),
+            vec![span("truncated", None, None, false)]
+        );
+        assert_eq!(
+            spans("\x1b[38;2;1mtruncated"),
+            vec![span("truncated", None, None, false)]
+        );
+        assert_eq!(
+            spans("\x1b[38;5;999mout of range"),
+            vec![span("out of range", None, None, false)]
+        );
+        // Private markers are not plain SGR.
+        assert_eq!(
+            spans("\x1b[>1mprivate"),
+            vec![span("private", None, None, false)]
+        );
+        // Every other control sequence is still stripped.
+        assert_eq!(
+            spans("\x1b[2Kcleared\x1b]0;title\x07\x1b[31mred"),
+            vec![
+                span("cleared", None, None, false),
+                span("red", Some(TabBarStatusColor::Indexed(1)), None, false),
+            ]
+        );
+        assert!(spans("\x1b[31m\x1b[0m").is_empty());
+    }
+
+    #[test]
+    fn ansi_command_output_keeps_styled_spans_of_the_last_line() {
+        assert_eq!(
+            command_output_spans(b"first\n \x1b[1;31mALERT\x1b[0m ok \n", true),
+            Some(vec![
+                span("ALERT", Some(TabBarStatusColor::Indexed(1)), None, true),
+                span(" ok", None, None, false),
+            ])
+        );
+        assert_eq!(command_output_spans(b"\x1b[31m\x1b[0m\n", true), None);
+
+        // The 80 character cap applies across the whole styled line.
+        let long = format!("\x1b[31m{}\x1b[32m{}", "a".repeat(70), "b".repeat(70));
+        assert_eq!(
+            command_output_spans(long.as_bytes(), true),
+            Some(vec![
+                span(
+                    &"a".repeat(70),
+                    Some(TabBarStatusColor::Indexed(1)),
+                    None,
+                    false
+                ),
+                span(
+                    &"b".repeat(10),
+                    Some(TabBarStatusColor::Indexed(2)),
+                    None,
+                    false
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn styled_status_text_drops_bidi_and_zero_width_format_controls() {
+        assert_eq!(
+            command_output_spans("safe\u{202e}\x1b[31mevil\u{200b}".as_bytes(), true),
+            Some(vec![
+                span("safe", None, None, false),
+                span("evil", Some(TabBarStatusColor::Indexed(1)), None, false),
+            ])
+        );
     }
 
     #[test]

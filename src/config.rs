@@ -33,7 +33,7 @@ pub use self::{
         SpaceSidebarToken, SpacesSidebarConfig,
     },
     sound::SoundConfig,
-    tab_bar::TabBarRightEntryConfig,
+    tab_bar::{TabBarSide, TabBarStatusEntryConfig},
     theme::{parse_color, CustomThemeColors, ModeThemeColors, ThemeConfig, THEME_NAMES},
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
@@ -43,9 +43,9 @@ pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};
 pub(crate) use self::{
     io::upsert_top_level_bool,
     tab_bar::{
-        parse_tab_bar_datetime_format, tab_bar_right_diagnostics,
+        parse_tab_bar_datetime_format, parse_tab_bar_status_color, tab_bar_status_diagnostics,
         MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS, MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
-        MAX_TAB_BAR_RIGHT_ENTRIES,
+        MAX_TAB_BAR_STATUS_ENTRIES,
     },
     theme::canonical_theme_name,
     window_title::{sanitize_window_title_text, window_title_diagnostics},
@@ -119,7 +119,14 @@ impl Config {
             .chain(self.remote_image_paste_key().err())
             .chain(self.theme.diagnostics())
             .chain(self.ui.sound.diagnostics())
-            .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
+            .chain(tab_bar_status_diagnostics(
+                TabBarSide::Left,
+                &self.ui.tab_bar_left,
+            ))
+            .chain(tab_bar_status_diagnostics(
+                TabBarSide::Right,
+                &self.ui.tab_bar_right,
+            ))
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
             .chain(self.invalid_headless_size_diagnostic())

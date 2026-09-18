@@ -947,6 +947,11 @@ pub struct ClientShellSnapshot {
     pub focused_pane_id: Option<String>,
     pub tab_bar_right: Vec<ClientShellTabStatusSegment>,
     pub tab_bar_right_separator: String,
+    /// Left-edge tab row status. Absent from an older endpoint's snapshot.
+    #[serde(default)]
+    pub tab_bar_left: Vec<ClientShellTabStatusSegment>,
+    #[serde(default)]
+    pub tab_bar_left_separator: String,
     pub agent_view_label: Option<String>,
     pub agent_order: Vec<String>,
     pub workspaces: Vec<ClientShellWorkspace>,
@@ -1021,6 +1026,27 @@ pub struct ClientShellCommand {
 pub struct ClientShellTabStatusSegment {
     pub text: String,
     pub accent: bool,
+    /// Styled runs covering the same characters as `text`. Empty means the
+    /// segment is unstyled, which is what an older endpoint always sends.
+    #[serde(default)]
+    pub spans: Vec<ClientShellTabStatusSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellTabStatusSpan {
+    pub text: String,
+    pub fg: Option<ClientShellStatusColor>,
+    pub bg: Option<ClientShellStatusColor>,
+    pub bold: bool,
+}
+
+/// One status color. `rgb` wins when set; otherwise `indexed` picks a terminal
+/// palette entry. Both unset leaves the color alone, which is how an unknown
+/// future color kind degrades.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientShellStatusColor {
+    pub indexed: Option<u8>,
+    pub rgb: Option<(u8, u8, u8)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2701,8 +2727,26 @@ mod tests {
             tab_bar_right: vec![ClientShellTabStatusSegment {
                 text: "host".into(),
                 accent: false,
+                spans: Vec::new(),
             }],
             tab_bar_right_separator: " · ".into(),
+            tab_bar_left: vec![ClientShellTabStatusSegment {
+                text: "iris".into(),
+                accent: false,
+                spans: vec![ClientShellTabStatusSpan {
+                    text: "iris".into(),
+                    fg: Some(ClientShellStatusColor {
+                        indexed: Some(9),
+                        rgb: None,
+                    }),
+                    bg: Some(ClientShellStatusColor {
+                        indexed: None,
+                        rgb: Some((1, 2, 3)),
+                    }),
+                    bold: true,
+                }],
+            }],
+            tab_bar_left_separator: " | ".into(),
             agent_view_label: None,
             agent_order: Vec::new(),
             workspaces: vec![ClientShellWorkspace {

@@ -494,6 +494,8 @@ impl App {
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            tab_bar_left: Vec::new(),
+            tab_bar_left_separator: String::new(),
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: String::new(),
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
@@ -625,7 +627,10 @@ impl App {
             client_shell_keybindings_profile,
             endpoint_commands,
         };
-        app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
+        app.configure_tab_bar_status(
+            (&config.ui.tab_bar_left, &config.ui.tab_bar_left_separator),
+            (&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator),
+        );
         app.configure_window_title(&config.ui.window_title);
         app
     }
@@ -828,7 +833,12 @@ impl App {
                 diagnostics.push(format!("{diagnostic}; keeping previous [ui] settings"));
             } else {
                 diagnostics.extend(config.ui.sound.diagnostics());
-                diagnostics.extend(crate::config::tab_bar_right_diagnostics(
+                diagnostics.extend(crate::config::tab_bar_status_diagnostics(
+                    crate::config::TabBarSide::Left,
+                    &config.ui.tab_bar_left,
+                ));
+                diagnostics.extend(crate::config::tab_bar_status_diagnostics(
+                    crate::config::TabBarSide::Right,
                     &config.ui.tab_bar_right,
                 ));
                 diagnostics.extend(crate::config::window_title_diagnostics(
@@ -844,8 +854,8 @@ impl App {
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
                 self.configure_tab_bar_status(
-                    &config.ui.tab_bar_right,
-                    &config.ui.tab_bar_right_separator,
+                    (&config.ui.tab_bar_left, &config.ui.tab_bar_left_separator),
+                    (&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator),
                 );
                 self.configure_window_title(&config.ui.window_title);
                 self.state.agent_panel_sort =
@@ -1065,18 +1075,26 @@ mod tests {
 
         let mut app = test_app();
         app.configure_tab_bar_status(
-            &[crate::config::TabBarRightEntryConfig::Command {
-                command: "status".into(),
-                interval_seconds: 5,
-                timeout_seconds: 2,
-            }],
-            " ",
+            (&[], " "),
+            (
+                &[crate::config::TabBarStatusEntryConfig::Command {
+                    command: "status".into(),
+                    interval_seconds: 5,
+                    timeout_seconds: 2,
+                    ansi: false,
+                }],
+                " ",
+            ),
         );
         let generation = app.tab_bar_status_generation;
         let event = |generation, output: Option<&str>| AppEvent::TabBarCommandFinished {
             generation,
-            segment_index: 0,
-            result: Ok(output.map(str::to_string)),
+            slot: crate::app::state::TabBarStatusSlot {
+                side: crate::config::TabBarSide::Right,
+                index: 0,
+            },
+            result: Ok(output
+                .map(|text| vec![crate::app::state::TabBarStatusSpan::plain(text.to_owned())])),
         };
 
         assert!(!app.handle_internal_event_with_render_impact(event(generation, None)));
@@ -1516,6 +1534,63 @@ mod tests {
             app.state.palette.accent,
             ratatui::style::Color::Rgb(1, 2, 3)
         );
+    }
+
+    #[test]
+    fn tab_row_theme_keys_default_to_the_palette_and_layer_like_other_tokens() {
+        let mut config = Config::default();
+        config.theme.name = Some("gruvbox".to_string());
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        // Unset keys keep the palette-derived tab row styling.
+        assert_eq!(app.state.palette.tab_bar_bg, None);
+        assert_eq!(app.state.palette.tab_active_fg, None);
+        assert_eq!(app.state.palette.tab_active_bg, None);
+        assert_eq!(app.state.palette.tab_inactive_fg, None);
+        assert!(!app.state.palette.tab_active_bold);
+
+        config.theme.auto_switch = true;
+        config.theme.custom = Some(crate::config::CustomThemeColors {
+            tab_bar_bg: Some("#010203".to_string()),
+            tab_active_bg: Some("#040506".to_string()),
+            tab_inactive_fg: Some("#070809".to_string()),
+            tab_active_bold: Some(true),
+            dark: Some(crate::config::ModeThemeColors {
+                tab_active_bg: Some("#0a0b0c".to_string()),
+                tab_active_fg: Some("#0d0e0f".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+
+        use ratatui::style::Color;
+        assert_eq!(app.state.palette.tab_bar_bg, Some(Color::Rgb(1, 2, 3)));
+        // The dark mode subtable wins over the shared override.
+        assert_eq!(
+            app.state.palette.tab_active_bg,
+            Some(Color::Rgb(10, 11, 12))
+        );
+        assert_eq!(
+            app.state.palette.tab_active_fg,
+            Some(Color::Rgb(13, 14, 15))
+        );
+        assert_eq!(app.state.palette.tab_inactive_fg, Some(Color::Rgb(7, 8, 9)));
+        assert!(app.state.palette.tab_active_bold);
     }
 
     #[test]

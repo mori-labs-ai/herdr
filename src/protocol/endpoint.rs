@@ -216,6 +216,8 @@ mod tests {
             focused_pane_id: None,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: String::new(),
+            tab_bar_left: Vec::new(),
+            tab_bar_left_separator: String::new(),
             agent_view_label: None,
             agent_order: Vec::new(),
             workspaces: Vec::new(),
@@ -268,6 +270,13 @@ mod tests {
             snapshot.workspaces[0].agent_status,
             crate::api::schema::AgentStatus::Unknown
         );
+        // The generation-1 fixture predates styled and left-edge tab bar status,
+        // so both must default without changing anything it does carry.
+        assert_eq!(snapshot.tab_bar_right[0].text, "host");
+        assert!(snapshot.tab_bar_right[0].accent);
+        assert!(snapshot.tab_bar_right[0].spans.is_empty());
+        assert!(snapshot.tab_bar_left.is_empty());
+        assert_eq!(snapshot.tab_bar_left_separator, "");
     }
 
     #[test]

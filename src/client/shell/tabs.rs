@@ -15,7 +15,8 @@ pub(crate) fn render_tab_bar(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    buffer.set_style(area, Style::default().bg(palette.panel_bg));
+    let row_bg = tab_bar_bg(palette);
+    buffer.set_style(area, Style::default().bg(row_bg));
     let tabs = snapshot
         .tabs
         .iter()
@@ -102,17 +103,22 @@ pub(crate) fn render_tab_bar(
         let rect = Rect::new(x, area.y, width, 1);
         let style = if tab.focused {
             let base = Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent);
-            if tab.custom_label {
+                .fg(palette
+                    .tab_active_fg
+                    .unwrap_or_else(|| panel_contrast_fg(palette)))
+                .bg(palette.tab_active_bg.unwrap_or(palette.accent));
+            if tab.custom_label || palette.tab_active_bold {
                 base.add_modifier(Modifier::BOLD)
             } else {
                 base
             }
-        } else if tab.custom_label {
-            Style::default().fg(palette.overlay1).bg(palette.surface0)
         } else {
-            Style::default().fg(palette.overlay0).bg(palette.surface0)
+            let fg = palette.tab_inactive_fg.unwrap_or(if tab.custom_label {
+                palette.overlay1
+            } else {
+                palette.overlay0
+            });
+            Style::default().fg(fg).bg(palette.surface0)
         };
         let padding = width.saturating_sub(display_width(&name));
         let left = padding / 2;
@@ -173,7 +179,7 @@ pub(crate) fn render_tab_bar(
             area.y,
             hits.new_tab.width,
             " + ",
-            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
+            Style::default().fg(palette.overlay1).bg(row_bg),
         );
     }
 
@@ -220,22 +226,45 @@ pub(crate) fn render_tab_bar(
             );
         }
     }
-    render_tab_bar_status(buffer, area, snapshot, palette);
+    render_tab_bar_status(
+        buffer,
+        tab_bar_status_left_area(snapshot, area),
+        &snapshot.tab_bar_left,
+        &snapshot.tab_bar_left_separator,
+        palette,
+    );
+    render_tab_bar_status(
+        buffer,
+        tab_bar_status_right_area(snapshot, area),
+        &snapshot.tab_bar_right,
+        &snapshot.tab_bar_right_separator,
+        palette,
+    );
 }
 
+fn tab_bar_bg(palette: &Palette) -> ratatui::style::Color {
+    palette.tab_bar_bg.unwrap_or(palette.panel_bg)
+}
+
+/// Combined width of both status areas, used to notice a tab-layout change.
 pub(crate) fn tab_bar_status_width(snapshot: &ClientShellSnapshot) -> u16 {
-    let content = snapshot.tab_bar_right.iter().fold(0u16, |width, segment| {
-        width.saturating_add(display_width(&segment.text))
-    });
-    let separators = snapshot.tab_bar_right.len().saturating_sub(1);
-    content.saturating_add(
-        display_width(&snapshot.tab_bar_right_separator)
-            .saturating_mul(separators.min(u16::MAX as usize) as u16),
+    status_width(&snapshot.tab_bar_left, &snapshot.tab_bar_left_separator).saturating_add(
+        status_width(&snapshot.tab_bar_right, &snapshot.tab_bar_right_separator),
     )
 }
 
-fn tab_bar_status_area(snapshot: &ClientShellSnapshot, area: Rect) -> Option<Rect> {
-    let width = tab_bar_status_width(snapshot);
+fn status_width(segments: &[ClientShellTabStatusSegment], separator: &str) -> u16 {
+    let content = segments.iter().fold(0u16, |width, segment| {
+        width.saturating_add(display_width(&segment.text))
+    });
+    let separators = segments.len().saturating_sub(1);
+    content.saturating_add(
+        display_width(separator).saturating_mul(separators.min(u16::MAX as usize) as u16),
+    )
+}
+
+fn tab_bar_status_right_area(snapshot: &ClientShellSnapshot, area: Rect) -> Option<Rect> {
+    let width = status_width(&snapshot.tab_bar_right, &snapshot.tab_bar_right_separator);
     if width == 0 {
         return None;
     }
@@ -244,50 +273,112 @@ fn tab_bar_status_area(snapshot: &ClientShellSnapshot, area: Rect) -> Option<Rec
         .then(|| Rect::new(area.right().saturating_sub(width), area.y, width, 1))
 }
 
+/// The left area is reserved after the right one, so a narrowing row drops the
+/// left status first and the tabs keep their minimum strip either way.
+fn tab_bar_status_left_area(snapshot: &ClientShellSnapshot, area: Rect) -> Option<Rect> {
+    let width = status_width(&snapshot.tab_bar_left, &snapshot.tab_bar_left_separator);
+    if width == 0 {
+        return None;
+    }
+    let right_reserved = tab_bar_status_right_area(snapshot, area)
+        .map(|status| status.width.saturating_add(1))
+        .unwrap_or(0);
+    let remaining = area.width.saturating_sub(right_reserved);
+    (remaining.saturating_sub(width.saturating_add(1)) >= MIN_TAB_STRIP_WIDTH)
+        .then(|| Rect::new(area.x, area.y, width, 1))
+}
+
 fn tab_bar_content_area(snapshot: &ClientShellSnapshot, area: Rect) -> Rect {
-    let reserved = tab_bar_status_area(snapshot, area)
+    let right_reserved = tab_bar_status_right_area(snapshot, area)
+        .map(|status| status.width.saturating_add(1))
+        .unwrap_or(0);
+    let left_reserved = tab_bar_status_left_area(snapshot, area)
         .map(|status| status.width.saturating_add(1))
         .unwrap_or(0);
     Rect {
-        width: area.width.saturating_sub(reserved),
+        x: area.x.saturating_add(left_reserved),
+        width: area
+            .width
+            .saturating_sub(right_reserved)
+            .saturating_sub(left_reserved),
         ..area
     }
 }
 
 fn render_tab_bar_status(
     buffer: &mut Buffer,
-    area: Rect,
-    snapshot: &ClientShellSnapshot,
+    status: Option<Rect>,
+    segments: &[ClientShellTabStatusSegment],
+    separator: &str,
     palette: &Palette,
 ) {
-    let Some(status) = tab_bar_status_area(snapshot, area) else {
+    let Some(status) = status else {
         return;
     };
-    let separator_width = display_width(&snapshot.tab_bar_right_separator);
+    let row_bg = tab_bar_bg(palette);
+    let separator_width = display_width(separator);
     let mut x = status.x;
-    for (index, segment) in snapshot.tab_bar_right.iter().enumerate() {
+    for (index, segment) in segments.iter().enumerate() {
         if index > 0 && separator_width > 0 {
             put_text(
                 buffer,
                 x,
-                area.y,
+                status.y,
                 separator_width,
-                &snapshot.tab_bar_right_separator,
-                Style::default().fg(palette.overlay0).bg(palette.panel_bg),
+                separator,
+                Style::default().fg(palette.overlay0).bg(row_bg),
             );
             x = x.saturating_add(separator_width);
         }
-        let width = display_width(&segment.text);
-        let style = if segment.accent {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.overlay1).bg(palette.panel_bg)
-        };
-        put_text(buffer, x, area.y, width, &segment.text, style);
-        x = x.saturating_add(width);
+        if segment.accent {
+            let width = display_width(&segment.text);
+            put_text(
+                buffer,
+                x,
+                status.y,
+                width,
+                &segment.text,
+                Style::default()
+                    .fg(panel_contrast_fg(palette))
+                    .bg(palette.accent)
+                    .add_modifier(Modifier::BOLD),
+            );
+            x = x.saturating_add(width);
+            continue;
+        }
+        if segment.spans.is_empty() {
+            let width = display_width(&segment.text);
+            put_text(
+                buffer,
+                x,
+                status.y,
+                width,
+                &segment.text,
+                Style::default().fg(palette.overlay1).bg(row_bg),
+            );
+            x = x.saturating_add(width);
+            continue;
+        }
+        for span in &segment.spans {
+            let width = display_width(&span.text);
+            let mut style = Style::default()
+                .fg(status_color(span.fg).unwrap_or(palette.overlay1))
+                .bg(status_color(span.bg).unwrap_or(row_bg));
+            if span.bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            put_text(buffer, x, status.y, width, &span.text, style);
+            x = x.saturating_add(width);
+        }
+    }
+}
+
+fn status_color(color: Option<ClientShellStatusColor>) -> Option<ratatui::style::Color> {
+    let color = color?;
+    match (color.rgb, color.indexed) {
+        (Some((red, green, blue)), _) => Some(ratatui::style::Color::Rgb(red, green, blue)),
+        (None, Some(index)) => Some(ratatui::style::Color::Indexed(index)),
+        (None, None) => None,
     }
 }
 
