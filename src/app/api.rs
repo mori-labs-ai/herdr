@@ -35,9 +35,9 @@ impl App {
             } => self.handle_git_status_refreshed(results, cache_updates),
             AppEvent::TabBarCommandFinished {
                 generation,
-                segment_index,
+                slot,
                 result,
-            } => self.handle_tab_bar_command_finished(generation, segment_index, result),
+            } => self.handle_tab_bar_command_finished(generation, slot, result),
             AppEvent::WorktreeReadFinished(result) => {
                 let changes_workspace = matches!(
                     &result.request.method,
@@ -153,11 +153,11 @@ impl App {
 
         if let AppEvent::TabBarCommandFinished {
             generation,
-            segment_index,
+            slot,
             result,
         } = ev
         {
-            let _ = self.handle_tab_bar_command_finished(generation, segment_index, result);
+            let _ = self.handle_tab_bar_command_finished(generation, slot, result);
             return Vec::new();
         }
 

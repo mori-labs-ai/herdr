@@ -119,6 +119,16 @@ pub struct CustomThemeColors {
     pub blue: Option<String>,
     pub teal: Option<String>,
     pub peach: Option<String>,
+    /// Tab row background. Unset uses panel_bg.
+    pub tab_bar_bg: Option<String>,
+    /// Active tab foreground. Unset uses the panel contrast color.
+    pub tab_active_fg: Option<String>,
+    /// Active tab background. Unset uses accent.
+    pub tab_active_bg: Option<String>,
+    /// Inactive tab foreground. Unset keeps the overlay colors.
+    pub tab_inactive_fg: Option<String>,
+    /// Render the active tab label bold. Default: false.
+    pub tab_active_bold: Option<bool>,
     /// Overrides applied when `auto_switch` selects a light appearance.
     pub light: Option<ModeThemeColors>,
     /// Overrides applied when `auto_switch` selects a dark appearance.
@@ -148,6 +158,16 @@ pub struct ModeThemeColors {
     pub blue: Option<String>,
     pub teal: Option<String>,
     pub peach: Option<String>,
+    /// Tab row background. Unset uses panel_bg.
+    pub tab_bar_bg: Option<String>,
+    /// Active tab foreground. Unset uses the panel contrast color.
+    pub tab_active_fg: Option<String>,
+    /// Active tab background. Unset uses accent.
+    pub tab_active_bg: Option<String>,
+    /// Inactive tab foreground. Unset keeps the overlay colors.
+    pub tab_inactive_fg: Option<String>,
+    /// Render the active tab label bold. Default: false.
+    pub tab_active_bold: Option<bool>,
 }
 
 /// Parse a color string into a ratatui Color.
