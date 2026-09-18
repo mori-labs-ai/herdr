@@ -1143,6 +1143,10 @@ mod tests {
                         body: Some("api workspace".into()),
                         position: Some(crate::config::ToastHerdrPosition::TopLeft),
                         sound: crate::api::schema::NotificationShowSound::None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: None,
+                        agent: None,
                     },
                 ),
             });
@@ -1166,6 +1170,78 @@ mod tests {
     }
 
     #[test]
+    fn notification_show_api_targets_pane_toast() {
+        let mut app = test_app();
+        app.state.toast_config.delivery = crate::config::ToastDelivery::Herdr;
+        app.state.workspaces = vec![Workspace::test_new("targets")];
+        app.state.ensure_test_terminals();
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        let workspace_id = app.public_workspace_id(0);
+        let pane_id = app.public_pane_id(0, pane).unwrap();
+
+        let response =
+            app.handle_api_request_after_internal_events_drained(crate::api::schema::Request {
+                id: "notify".into(),
+                method: crate::api::schema::Method::NotificationShow(
+                    crate::api::schema::NotificationShowParams {
+                        title: "run finished".into(),
+                        body: None,
+                        position: None,
+                        sound: crate::api::schema::NotificationShowSound::None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: Some(pane_id),
+                        agent: None,
+                    },
+                ),
+            });
+
+        let parsed: crate::api::schema::SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            parsed.result,
+            crate::api::schema::ResponseResult::NotificationShow {
+                shown: true,
+                reason: crate::api::schema::NotificationShowReason::Shown,
+            }
+        );
+        let target = app
+            .state
+            .toast
+            .as_ref()
+            .and_then(|toast| toast.target.as_ref())
+            .expect("targeted api toast");
+        assert_eq!(target.workspace_id, workspace_id);
+        assert_eq!(target.pane_id, pane);
+    }
+
+    #[test]
+    fn notification_show_api_rejects_unknown_pane_target() {
+        let mut app = test_app();
+        app.state.toast_config.delivery = crate::config::ToastDelivery::Herdr;
+
+        let response =
+            app.handle_api_request_after_internal_events_drained(crate::api::schema::Request {
+                id: "notify".into(),
+                method: crate::api::schema::Method::NotificationShow(
+                    crate::api::schema::NotificationShowParams {
+                        title: "run finished".into(),
+                        body: None,
+                        position: None,
+                        sound: crate::api::schema::NotificationShowSound::None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: Some("w9:p9".into()),
+                        agent: None,
+                    },
+                ),
+            });
+
+        let parsed: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(parsed.error.code, "pane_not_found");
+        assert!(app.state.toast.is_none());
+    }
+
+    #[test]
     fn notification_show_api_respects_off_delivery() {
         let mut app = test_app();
         app.state.toast_config.delivery = crate::config::ToastDelivery::Off;
@@ -1179,6 +1255,10 @@ mod tests {
                         body: None,
                         position: None,
                         sound: crate::api::schema::NotificationShowSound::None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: None,
+                        agent: None,
                     },
                 ),
             });
@@ -1215,6 +1295,10 @@ mod tests {
                         body: None,
                         position: None,
                         sound: crate::api::schema::NotificationShowSound::None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: None,
+                        agent: None,
                     },
                 ),
             });
@@ -1248,6 +1332,10 @@ mod tests {
                         body: None,
                         position: None,
                         sound: crate::api::schema::NotificationShowSound::None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: None,
+                        agent: None,
                     },
                 ),
             });

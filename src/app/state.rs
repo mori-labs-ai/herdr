@@ -726,6 +726,17 @@ pub struct ToastNotification {
     pub target: Option<ToastTarget>,
 }
 
+/// Canonical public ids for an API notification target, resolved from
+/// `NotificationShowParams`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotificationTarget {
+    pub workspace_id: Option<String>,
+    pub tab_id: Option<String>,
+    pub pane_id: Option<String>,
+    /// Workspace index and pane behind `pane_id`, for in-app toast targeting.
+    pub pane: Option<(usize, PaneId)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingAgentNotification {
     pub pane_id: PaneId,

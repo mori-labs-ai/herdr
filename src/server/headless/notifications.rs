@@ -263,6 +263,23 @@ impl HeadlessServer {
             .body
             .as_deref()
             .and_then(|body| sanitize_notification_text(body, 240));
+        let target = match self.app.resolve_notification_target(&params) {
+            Ok(target) => target,
+            Err((code, message)) => {
+                return serde_json::to_string(&api::schema::ErrorResponse {
+                    id,
+                    error: api::schema::ErrorBody {
+                        code: code.into(),
+                        message,
+                    },
+                })
+                .unwrap_or_else(|_| "{}".to_string());
+            }
+        };
+        let agent = params
+            .agent
+            .as_deref()
+            .and_then(|agent| sanitize_notification_text(agent, 40));
         let has_client_shell = self.clients.values().any(ClientConnection::is_shell_client);
         if !has_client_shell {
             let reason = if self.app.state.toast_config.delivery == config::ToastDelivery::Off {
@@ -290,10 +307,10 @@ impl HeadlessServer {
                 title,
                 body,
                 sound,
-                agent: None,
-                workspace_id: None,
-                tab_id: None,
-                pane_id: None,
+                agent,
+                workspace_id: target.workspace_id,
+                tab_id: target.tab_id,
+                pane_id: target.pane_id,
                 position: params.position,
             },
         ));

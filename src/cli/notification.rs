@@ -25,7 +25,7 @@ fn notification_show(args: &[String]) -> std::io::Result<i32> {
         Ok(params) => params,
         Err(NotificationShowArgError::Usage) => {
             eprintln!(
-                "usage: herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]"
+                "usage: herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request] [--pane ID] [--tab ID] [--workspace ID] [--agent NAME]"
             );
             return Ok(2);
         }
@@ -60,6 +60,10 @@ fn parse_notification_show_args(
     let mut body = None;
     let mut position = None;
     let mut sound = NotificationShowSound::None;
+    let mut pane_id = None;
+    let mut tab_id = None;
+    let mut workspace_id = None;
+    let mut agent = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -90,6 +94,42 @@ fn parse_notification_show_args(
                 sound = parse_notification_sound(value)?;
                 index += 2;
             }
+            "--pane" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(NotificationShowArgError::Message(
+                        "missing value for --pane".into(),
+                    ));
+                };
+                pane_id = Some(value.clone());
+                index += 2;
+            }
+            "--tab" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(NotificationShowArgError::Message(
+                        "missing value for --tab".into(),
+                    ));
+                };
+                tab_id = Some(value.clone());
+                index += 2;
+            }
+            "--workspace" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(NotificationShowArgError::Message(
+                        "missing value for --workspace".into(),
+                    ));
+                };
+                workspace_id = Some(value.clone());
+                index += 2;
+            }
+            "--agent" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(NotificationShowArgError::Message(
+                        "missing value for --agent".into(),
+                    ));
+                };
+                agent = Some(value.clone());
+                index += 2;
+            }
             other => {
                 return Err(NotificationShowArgError::Message(format!(
                     "unknown option: {other}"
@@ -103,6 +143,10 @@ fn parse_notification_show_args(
         body,
         position,
         sound,
+        workspace_id,
+        tab_id,
+        pane_id,
+        agent,
     })
 }
 
@@ -134,7 +178,7 @@ fn parse_notification_sound(
 fn print_notification_help() {
     eprintln!("herdr notification commands:");
     eprintln!(
-        "  herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]"
+        "  herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request] [--pane ID] [--tab ID] [--workspace ID] [--agent NAME]"
     );
 }
 
@@ -166,6 +210,10 @@ mod tests {
                 body: Some("api workspace".into()),
                 position: Some(ToastHerdrPosition::TopRight),
                 sound: NotificationShowSound::Request,
+                workspace_id: None,
+                tab_id: None,
+                pane_id: None,
+                agent: None,
             }
         );
     }
@@ -190,6 +238,47 @@ mod tests {
         let params = parse_notification_show_args(&args(&["build failed"])).unwrap();
 
         assert_eq!(params.sound, NotificationShowSound::None);
+    }
+
+    #[test]
+    fn notification_show_args_parse_target_flags() {
+        let params = parse_notification_show_args(&args(&[
+            "run finished",
+            "--pane",
+            "w1:p2",
+            "--tab",
+            "w1:t1",
+            "--workspace",
+            "w1",
+            "--agent",
+            "claude",
+        ]))
+        .unwrap();
+
+        assert_eq!(params.pane_id.as_deref(), Some("w1:p2"));
+        assert_eq!(params.tab_id.as_deref(), Some("w1:t1"));
+        assert_eq!(params.workspace_id.as_deref(), Some("w1"));
+        assert_eq!(params.agent.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn notification_show_args_require_pane_value() {
+        let error = parse_notification_show_args(&args(&["run finished", "--pane"])).unwrap_err();
+
+        assert_eq!(
+            error,
+            NotificationShowArgError::Message("missing value for --pane".into())
+        );
+    }
+
+    #[test]
+    fn notification_show_args_default_to_untargeted() {
+        let params = parse_notification_show_args(&args(&["build failed"])).unwrap();
+
+        assert_eq!(params.pane_id, None);
+        assert_eq!(params.tab_id, None);
+        assert_eq!(params.workspace_id, None);
+        assert_eq!(params.agent, None);
     }
 
     #[test]

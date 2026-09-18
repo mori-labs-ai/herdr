@@ -2350,7 +2350,21 @@
         },
         "NotificationShowParams": {
           "properties": {
+            "agent": {
+              "description": "Optional agent label reported with the notification, used by clients for\nper-agent sound filtering.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "description": "Optional target pane. The most specific supplied target wins.",
               "type": [
                 "string",
                 "null"
@@ -2369,8 +2383,22 @@
             "sound": {
               "$ref": "#/schemas/request/$defs/NotificationShowSound"
             },
+            "tab_id": {
+              "description": "Optional target tab. A supplied pane must belong to it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "title": {
               "type": "string"
+            },
+            "workspace_id": {
+              "description": "Optional target workspace. A supplied tab or pane must belong to it.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

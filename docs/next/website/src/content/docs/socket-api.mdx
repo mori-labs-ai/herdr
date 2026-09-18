@@ -366,9 +366,12 @@ Show a user notification through the configured toast delivery:
 
 ```json
 {"id":"req_notify","method":"notification.show","params":{"title":"build failed","body":"api workspace","position":"top-left","sound":"request"}}
+{"id":"req_notify_pane","method":"notification.show","params":{"title":"run finished","pane_id":"w1:p2","agent":"claude"}}
 ```
 
 `title` is required and must contain visible text after control characters and repeated whitespace are removed. `body` is optional. Herdr collapses newlines, tabs, carriage returns, and repeated whitespace into spaces, then trims notification text to 80 characters for `title` and 240 characters for `body`. An empty sanitized `title` returns `invalid_params`. `position` is optional and applies only when `ui.toast.delivery = "herdr"`; desktop positions are relative to the full Herdr frame, and omitted positions use `ui.toast.herdr.position`. Terminal, system, and off delivery ignore `position`. `sound` is optional and can be `none`, `done`, or `request`; it defaults to `none` and plays only when the notification is shown.
+
+`workspace_id`, `tab_id`, and `pane_id` are optional and target the notification at one part of the session; omitting all of them keeps it app-global. The most specific id wins, and the others are checked against it: an unknown id returns `pane_not_found`, `tab_not_found`, or `workspace_not_found`, and a pane that does not belong to the requested tab or workspace returns `notification_target_mismatch`. A targeted notification carries the canonical workspace, tab, and pane ids to clients, which suppress it while that target is already focused and focus the pane when the toast is activated. `agent` is optional and reports the agent name behind the notification for per-agent sound filtering.
 
 The response reports whether anything was shown:
 

@@ -133,10 +133,12 @@ herdr server reload-agent-manifests
 ## Notifications
 
 ```bash
-herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]
+herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request] [--pane ID] [--tab ID] [--workspace ID] [--agent NAME]
 ```
 
 `notification show` uses the configured `[ui.toast]` delivery. `--position` only affects in-app Herdr toasts. `--sound` defaults to `none`; `done` and `request` play the existing finished and needs-attention sounds only when the notification is shown.
+
+`--pane`, `--tab`, and `--workspace` target the notification instead of showing it for the whole app, so clients can suppress it while that target is already focused and focus it when you activate the toast. The most specific id wins, and an id that does not exist, or a tab or workspace that the pane does not belong to, is rejected. `--agent` reports the agent name behind the notification, which clients use for per-agent sound filtering. Without these flags the notification stays app-global.
 
 ## Sessions
 

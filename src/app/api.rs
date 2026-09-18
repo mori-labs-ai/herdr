@@ -1236,6 +1236,90 @@ impl App {
         serde_json::to_string(&response).unwrap()
     }
 
+    /// Resolves the optional notification target to canonical public ids. The
+    /// most specific id wins; any supplied parent id must agree with it.
+    pub(crate) fn resolve_notification_target(
+        &self,
+        params: &crate::api::schema::NotificationShowParams,
+    ) -> Result<crate::app::state::NotificationTarget, (&'static str, String)> {
+        use crate::app::state::NotificationTarget;
+
+        if let Some(pane_id) = params.pane_id.as_deref() {
+            let pane_missing = || ("pane_not_found", format!("pane not found: {pane_id}"));
+            let Some((ws_idx, pane)) = self.parse_pane_id(pane_id) else {
+                return Err(pane_missing());
+            };
+            let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane) else {
+                return Err(pane_missing());
+            };
+            let workspace_id = self.public_workspace_id(ws_idx);
+            let tab_id = self.public_tab_id(ws_idx, tab_idx);
+            self.validate_notification_workspace_id(params, &workspace_id)?;
+            if params
+                .tab_id
+                .as_deref()
+                .is_some_and(|requested| Some(requested) != tab_id.as_deref())
+            {
+                return Err((
+                    "notification_target_mismatch",
+                    "notification pane does not belong to the requested tab".to_owned(),
+                ));
+            }
+            return Ok(NotificationTarget {
+                workspace_id: Some(workspace_id),
+                tab_id,
+                pane_id: self.public_pane_id(ws_idx, pane),
+                pane: Some((ws_idx, pane)),
+            });
+        }
+
+        if let Some(tab_id) = params.tab_id.as_deref() {
+            let Some((ws_idx, tab_idx)) = self.parse_tab_id(tab_id) else {
+                return Err(("tab_not_found", format!("tab not found: {tab_id}")));
+            };
+            let workspace_id = self.public_workspace_id(ws_idx);
+            self.validate_notification_workspace_id(params, &workspace_id)?;
+            return Ok(NotificationTarget {
+                workspace_id: Some(workspace_id),
+                tab_id: self.public_tab_id(ws_idx, tab_idx),
+                ..NotificationTarget::default()
+            });
+        }
+
+        if let Some(workspace_id) = params.workspace_id.as_deref() {
+            let Some(ws_idx) = self.parse_workspace_id(workspace_id) else {
+                return Err((
+                    "workspace_not_found",
+                    format!("workspace not found: {workspace_id}"),
+                ));
+            };
+            return Ok(NotificationTarget {
+                workspace_id: Some(self.public_workspace_id(ws_idx)),
+                ..NotificationTarget::default()
+            });
+        }
+
+        Ok(NotificationTarget::default())
+    }
+
+    fn validate_notification_workspace_id(
+        &self,
+        params: &crate::api::schema::NotificationShowParams,
+        workspace_id: &str,
+    ) -> Result<(), (&'static str, String)> {
+        if params
+            .workspace_id
+            .as_deref()
+            .is_some_and(|requested| requested != workspace_id)
+        {
+            return Err((
+                "notification_target_mismatch",
+                "notification target does not belong to the requested workspace".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn handle_notification_show(
         &mut self,
         id: String,
@@ -1250,6 +1334,16 @@ impl App {
             .body
             .as_deref()
             .and_then(|body| sanitized_notification_text(body, 240));
+        let target = match self.resolve_notification_target(&params) {
+            Ok(target) => target,
+            Err((code, message)) => return responses::encode_error(id, code, message),
+        };
+        let toast_target = target
+            .pane
+            .map(|(ws_idx, pane_id)| crate::app::state::ToastTarget {
+                workspace_id: self.public_workspace_id(ws_idx),
+                pane_id,
+            });
 
         let reason = match self.state.toast_config.delivery {
             crate::config::ToastDelivery::Off => NotificationShowReason::Disabled,
@@ -1266,7 +1360,7 @@ impl App {
                         title,
                         context: body.unwrap_or_default(),
                         position: params.position,
-                        target: None,
+                        target: toast_target,
                     });
                     self.sync_toast_deadline(previous_toast);
                     NotificationShowReason::Shown
