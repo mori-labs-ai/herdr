@@ -109,6 +109,19 @@ pub struct NotificationShowParams {
     pub position: Option<crate::config::ToastHerdrPosition>,
     #[serde(default, skip_serializing_if = "NotificationShowSound::is_none")]
     pub sound: NotificationShowSound,
+    /// Optional target workspace. A supplied tab or pane must belong to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Optional target tab. A supplied pane must belong to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
+    /// Optional target pane. The most specific supplied target wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    /// Optional agent label reported with the notification, used by clients for
+    /// per-agent sound filtering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(

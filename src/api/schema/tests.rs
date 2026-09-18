@@ -338,6 +338,37 @@ fn notification_show_request_parses() {
 }
 
 #[test]
+fn notification_show_request_parses_target_fields() {
+    let json = r#"{"id":"req_1","method":"notification.show","params":{"title":"run finished","workspace_id":"w1","tab_id":"w1:t1","pane_id":"w1:p2","agent":"claude"}}"#;
+    let request: Request = serde_json::from_str(json).unwrap();
+    let Method::NotificationShow(params) = request.method else {
+        panic!("wrong method parsed");
+    };
+    assert_eq!(params.workspace_id.as_deref(), Some("w1"));
+    assert_eq!(params.tab_id.as_deref(), Some("w1:t1"));
+    assert_eq!(params.pane_id.as_deref(), Some("w1:p2"));
+    assert_eq!(params.agent.as_deref(), Some("claude"));
+}
+
+#[test]
+fn notification_show_target_defaults_to_none() {
+    let json = r#"{"id":"req_1","method":"notification.show","params":{"title":"build failed"}}"#;
+    let request: Request = serde_json::from_str(json).unwrap();
+    let Method::NotificationShow(params) = request.method else {
+        panic!("wrong method parsed");
+    };
+
+    assert_eq!(params.workspace_id, None);
+    assert_eq!(params.tab_id, None);
+    assert_eq!(params.pane_id, None);
+    assert_eq!(params.agent, None);
+    assert_eq!(
+        serde_json::to_value(&params).unwrap(),
+        serde_json::json!({"title":"build failed"})
+    );
+}
+
+#[test]
 fn notification_show_sound_defaults_to_none() {
     let json = r#"{"id":"req_1","method":"notification.show","params":{"title":"build failed"}}"#;
     let request: Request = serde_json::from_str(json).unwrap();
